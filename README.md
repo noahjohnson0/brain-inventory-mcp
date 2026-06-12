@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="docs/assets/logo.png" alt="brain-inventory-mcp" width="200">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.png">
+    <img src="docs/assets/logo-light.png" alt="brain-inventory-mcp" width="200">
+  </picture>
 </p>
 
 # brain-inventory-mcp
