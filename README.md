@@ -1,11 +1,14 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.png">
-    <img src="docs/assets/logo-light.png" alt="brain-inventory-mcp" width="200">
-  </picture>
-</p>
-
-# brain-inventory-mcp
+<table border="0" cellspacing="0" cellpadding="0">
+<tr>
+<td width="220" valign="middle">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.png">
+<img src="docs/assets/logo-light.png" alt="brain-inventory-mcp" width="200">
+</picture>
+</td>
+<td valign="middle"><h1>B&nbsp;R&nbsp;A&nbsp;I&nbsp;N &nbsp; I&nbsp;N&nbsp;V&nbsp;E&nbsp;N&nbsp;T&nbsp;O&nbsp;R&nbsp;Y &nbsp; M&nbsp;C&nbsp;P</h1></td>
+</tr>
+</table>
 
 Talk to your **physical inventory** through Claude. This is a small [MCP](https://modelcontextprotocol.io)
 server that turns the `inventory/` folder of an [Obsidian](https://obsidian.md) vault
