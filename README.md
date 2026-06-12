@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/logo.png" alt="brain-inventory-mcp" width="200">
+</p>
+
 # brain-inventory-mcp
 
 Talk to your **physical inventory** through Claude. This is a small [MCP](https://modelcontextprotocol.io)
