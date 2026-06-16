@@ -24,4 +24,5 @@ packages = ["brain_inventory_mcp"]
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "pytest>=8.0",
 ]
