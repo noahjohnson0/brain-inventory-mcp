@@ -41,12 +41,13 @@ keep full ownership and can still browse/edit everything in Obsidian.
 
 | Tool | What it does |
 |---|---|
-| `search_inventory(query)` | Fuzzy search across name, category, parent, and body |
+| `search_inventory(query, limit?)` | Ranked multi-word search across name, category, parent, and body (name hits rank highest); every word must match |
 | `list_inventory(category?, parent?)` | List items, optionally filtered |
 | `get_item(name)` | Full frontmatter + body for one item |
 | `add_item(name, category?, parent?, body?, is_container?)` | Create a new item |
 | `move_item(name, new_parent)` | Re-parent an item into another container |
-| `update_item(name, category?, append_body?)` | Change category / append a note |
+| `update_item(name, category?, append_body?, replace_body?, is_container?, new_name?)` | Change category, append/replace the body, flip `is_container`, or rename (also re-points children) |
+| `remove_item(name)` | Delete an item's note (gave it away / threw it out) |
 
 ### Vault conventions
 
@@ -216,6 +217,12 @@ launchctl load ~/Library/LaunchAgents/com.example.brain-inventory-mcp.plist
 ```
 
 ## Testing
+
+```bash
+# Unit tests for the vault layer (CRUD, ranked search, rename/re-parent,
+# frontmatter quoting) against a throwaway temp vault — no server needed:
+uv run --group dev pytest
+```
 
 ```bash
 # Full OAuth flow: DCR -> authorize -> login -> token -> authed call, plus

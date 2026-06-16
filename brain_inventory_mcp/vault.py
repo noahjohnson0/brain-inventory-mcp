@@ -34,9 +34,14 @@ def vault_root() -> Path:
     return root
 
 
+def inventory_subdir() -> str:
+    """Name of the inventory subfolder (override with BRAIN_INVENTORY_DIR)."""
+    return os.environ.get("BRAIN_INVENTORY_DIR", "inventory")
+
+
 def inventory_dir() -> Path:
     """The inventory subfolder (override the name with BRAIN_INVENTORY_DIR)."""
-    sub = os.environ.get("BRAIN_INVENTORY_DIR", "inventory")
+    sub = inventory_subdir()
     d = vault_root() / sub
     if not d.is_dir():
         raise FileNotFoundError(f"No {sub}/ dir under {vault_root()!s}")
@@ -77,6 +82,28 @@ def _unwiki(value) -> str | None:
     if not value:
         return None
     return re.sub(r"^\[\[(.*)\]\]$", r"\1", str(value).strip()).strip()
+
+
+# A value safe to write as a bare (unquoted) YAML scalar.
+_SAFE_PLAIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _./&()+'-]*$")
+
+
+def _quote(value: str) -> str:
+    """Render a value as an always-quoted, escaped YAML double-quoted scalar."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _yaml_scalar(value: str) -> str:
+    """Plain YAML scalar when it's safe, otherwise a quoted/escaped one."""
+    if _SAFE_PLAIN.match(value) and ": " not in value:
+        return value
+    return _quote(value)
+
+
+def _wikilink(name: str) -> str:
+    """A quoted ``[[name]]`` value, safe even if the name has odd characters."""
+    return _quote(f"[[{_unwiki(name)}]]")
 
 
 def split_frontmatter(text: str) -> tuple[dict, str]:
@@ -147,18 +174,93 @@ def list_items(category: str | None = None, parent: str | None = None) -> list[I
     return items
 
 
-def search_items(query: str) -> list[Item]:
-    q = query.strip().lower()
-    hits = []
+# Field weights for ranking: a hit in the name beats a hit in the body.
+_FIELD_WEIGHTS = (("name", 8), ("category", 4), ("parent", 4), ("body", 1))
+
+DEFAULT_SEARCH_LIMIT = 20
+
+
+def _score(item: Item, terms: list[str]) -> int:
+    """Rank an item against query terms. Returns 0 unless every term matches."""
+    fields = {
+        "name": (item.name or "").lower(),
+        "category": (item.category or "").lower(),
+        "parent": (item.parent or "").lower(),
+        "body": (item.body or "").lower(),
+    }
+    total = 0
+    for term in terms:
+        best = 0
+        for field, weight in _FIELD_WEIGHTS:
+            hay = fields[field]
+            if term not in hay:
+                continue
+            w = weight
+            if hay == term:
+                w += 4  # exact field match
+            elif re.search(rf"\b{re.escape(term)}", hay):
+                w += 1  # word-boundary (prefix) match
+            best = max(best, w)
+        if best == 0:
+            return 0  # AND semantics: every term must hit some field
+        total += best
+    return total
+
+
+def search_items(query: str, limit: int | None = DEFAULT_SEARCH_LIMIT) -> list[Item]:
+    """Ranked, token-AND search over name/category/parent/body.
+
+    The query is split into whitespace terms; an item matches only if *every*
+    term appears somewhere. Results are ranked (name > category/parent > body)
+    and capped at ``limit`` (pass ``None`` for no cap).
+    """
+    terms = [t for t in query.strip().lower().split() if t]
+    if not terms:
+        return []
+    scored: list[tuple[int, str, Item]] = []
     for item in all_items():
-        haystack = f"{item.name}\n{item.category}\n{item.parent}\n{item.body}".lower()
-        if q in haystack:
-            hits.append(item)
-    return hits
+        s = _score(item, terms)
+        if s > 0:
+            scored.append((s, item.name.lower(), item))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    items = [it for _, _, it in scored]
+    return items[:limit] if limit else items
 
 
 def _today() -> str:
     return date.today().isoformat()
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write a note crash-safely: write a temp file, then atomically replace.
+
+    Avoids leaving a half-written note if the process dies mid-write.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _split_head_body(text: str) -> tuple[str, str]:
+    """Split into (frontmatter block incl. closing ---, body). ('', text) if none."""
+    if not text.startswith(FM_DELIM):
+        return "", text
+    end = text.index(FM_DELIM, len(FM_DELIM))
+    head = text[:end] + FM_DELIM
+    body = text[end + len(FM_DELIM):].lstrip("\n")
+    return head, body
+
+
+def _retitle_h1(body: str, old: str, new: str) -> str:
+    """Rewrite a leading ``# old`` heading to ``# new`` (only the title line)."""
+    lines = body.split("\n")
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if line.strip() == f"# {old}":
+            lines[i] = f"# {new}"
+        break  # only consider the first non-empty line
+    return "\n".join(lines)
 
 
 def create_item(
@@ -174,12 +276,12 @@ def create_item(
     today = _today()
     lines = [
         FM_DELIM,
-        f'name: "{name}"',
-        f"category: {category}",
+        f"name: {_quote(name)}",
+        f"category: {_yaml_scalar(category)}",
         f"is_container: {'true' if is_container else 'false'}",
     ]
     if parent:
-        lines.append(f'parent: "[[{_unwiki(parent)}]]"')
+        lines.append(f"parent: {_wikilink(parent)}")
     lines += [
         f"created: {today}",
         f"updated: {today}",
@@ -192,7 +294,7 @@ def create_item(
     if body.strip():
         lines.append(body.strip())
         lines.append("")
-    path.write_text("\n".join(lines), encoding="utf-8")
+    _atomic_write(path, "\n".join(lines))
     return load_item(path)
 
 
@@ -204,7 +306,8 @@ def _set_fm_field(text: str, key: str, value: str) -> str:
     head, rest = text[:end], text[end:]
     pattern = re.compile(rf"^{re.escape(key)}:.*$", re.MULTILINE)
     if pattern.search(head):
-        head = pattern.sub(f"{key}: {value}", head, count=1)
+        # function replacement -> value is used literally (no backslash/group magic)
+        head = pattern.sub(lambda _m: f"{key}: {value}", head, count=1)
     else:
         head = head.rstrip("\n") + f"\n{key}: {value}\n"
     return head + rest
@@ -215,40 +318,105 @@ def move_item(name: str, new_parent: str) -> Item:
     if not item:
         raise FileNotFoundError(f"No inventory item named {name!r}")
     text = item.path.read_text(encoding="utf-8")
-    text = _set_fm_field(text, "parent", f'"[[{_unwiki(new_parent)}]]"')
+    text = _set_fm_field(text, "parent", _wikilink(new_parent))
     text = _set_fm_field(text, "updated", _today())
-    item.path.write_text(text, encoding="utf-8")
+    _atomic_write(item.path, text)
     return load_item(item.path)
+
+
+def _reparent_children(old_parent: str, new_parent: str) -> int:
+    """Re-point every item whose parent was ``old_parent`` to ``new_parent``."""
+    target = old_parent.strip().lower()
+    count = 0
+    for child in all_items():
+        if (child.parent or "").lower() == target:
+            t = child.path.read_text(encoding="utf-8")
+            t = _set_fm_field(t, "parent", _wikilink(new_parent))
+            t = _set_fm_field(t, "updated", _today())
+            _atomic_write(child.path, t)
+            count += 1
+    return count
 
 
 def update_item(
     name: str,
     category: str | None = None,
     append_body: str | None = None,
+    replace_body: str | None = None,
+    is_container: bool | None = None,
+    new_name: str | None = None,
 ) -> Item:
+    """Update an item's metadata and/or body.
+
+    - ``category`` / ``is_container`` set those frontmatter fields.
+    - ``append_body`` adds a line; ``replace_body`` overwrites the prose under the
+      ``# Title`` heading (mutually exclusive with ``append_body``).
+    - ``new_name`` renames the item: it rewrites the ``name`` field, the ``# Title``
+      heading and the filename, and re-points any children that listed it as parent.
+    """
+    if append_body is not None and replace_body is not None:
+        raise ValueError("Pass either append_body or replace_body, not both")
     item = find_item(name)
     if not item:
         raise FileNotFoundError(f"No inventory item named {name!r}")
+
+    renaming = bool(new_name) and new_name != item.name
+    if renaming:
+        new_path = path_for(new_name)
+        if new_path.exists() and new_path != item.path:
+            raise FileExistsError(f"Item already exists: {new_path.name}")
+    display = new_name if new_name else item.name
+
     text = item.path.read_text(encoding="utf-8")
+    if new_name:
+        text = _set_fm_field(text, "name", _quote(new_name))
     if category:
-        text = _set_fm_field(text, "category", category)
+        text = _set_fm_field(text, "category", _yaml_scalar(category))
+    if is_container is not None:
+        text = _set_fm_field(text, "is_container", "true" if is_container else "false")
+
+    if replace_body is not None:
+        head, _ = _split_head_body(text)
+        prose = replace_body.strip()
+        text = head + f"\n\n# {display}\n\n" + (prose + "\n" if prose else "")
+    elif new_name:
+        head, body = _split_head_body(text)
+        text = head + "\n\n" + _retitle_h1(body, item.name, new_name).lstrip("\n")
+
     if append_body and append_body.strip():
         text = text.rstrip("\n") + f"\n\n{append_body.strip()}\n"
+
     text = _set_fm_field(text, "updated", _today())
-    item.path.write_text(text, encoding="utf-8")
+
+    if renaming:
+        _atomic_write(new_path, text)
+        item.path.unlink()
+        _reparent_children(item.name, new_name)
+        return load_item(new_path)
+    _atomic_write(item.path, text)
     return load_item(item.path)
+
+
+def remove_item(name: str) -> Item:
+    """Delete an item's note from the vault. Returns the removed item."""
+    item = find_item(name)
+    if not item:
+        raise FileNotFoundError(f"No inventory item named {name!r}")
+    item.path.unlink()
+    return item
 
 
 def git_commit(message: str) -> str:
     """Stage inventory changes and commit+push. Best-effort; returns status text."""
     root = vault_root()
+    sub = inventory_subdir()
     try:
         subprocess.run(
-            ["git", "add", "inventory"], cwd=root, check=True,
+            ["git", "add", sub], cwd=root, check=True,
             capture_output=True, text=True,
         )
         status = subprocess.run(
-            ["git", "status", "--porcelain", "inventory"], cwd=root,
+            ["git", "status", "--porcelain", sub], cwd=root,
             capture_output=True, text=True,
         )
         if not status.stdout.strip():

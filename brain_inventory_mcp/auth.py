@@ -84,8 +84,29 @@ class _Store:
                 self.data.update(json.loads(self.path.read_text()))
             except (json.JSONDecodeError, OSError):
                 pass
+        self._prune()
+
+    def _prune(self) -> None:
+        """Drop expired entries so the store doesn't grow without bound.
+
+        `clients` are kept (long-lived DCR registrations); everything else carries
+        an `expires_at` and is dropped once past it. A missing/zero `expires_at`
+        (non-expiring token) is kept.
+        """
+        now = time.time()
+
+        def live(bucket: dict[str, dict]) -> dict[str, dict]:
+            return {
+                k: v
+                for k, v in bucket.items()
+                if not v.get("expires_at") or v["expires_at"] > now
+            }
+
+        for name in ("pending", "codes", "access", "refresh"):
+            self.data[name] = live(self.data[name])
 
     def save(self) -> None:
+        self._prune()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.data))

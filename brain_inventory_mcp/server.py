@@ -66,13 +66,15 @@ def _build_server() -> "FastMCP":
 
 def _register_tools(mcp: "FastMCP") -> None:
     @mcp.tool()
-    def search_inventory(query: str) -> list[dict]:
+    def search_inventory(query: str, limit: int = vault.DEFAULT_SEARCH_LIMIT) -> list[dict]:
         """Search inventory items by name, category, parent, or body text.
 
-        Returns a list of item summaries (name, category, is_container, parent, file).
-        Use this first when the user describes an item loosely ("my charger").
+        Ranked, multi-word search: every word in the query must match somewhere,
+        and hits in the name rank above hits in the body. Returns up to `limit`
+        item summaries (name, category, is_container, parent, file). Use this
+        first when the user describes an item loosely ("my usb charger").
         """
-        return [i.summary() for i in vault.search_items(query)]
+        return [i.summary() for i in vault.search_items(query, limit=limit)]
 
     @mcp.tool()
     def list_inventory(category: str | None = None, parent: str | None = None) -> list[dict]:
@@ -131,14 +133,45 @@ def _register_tools(mcp: "FastMCP") -> None:
         name: str,
         category: str | None = None,
         append_body: str | None = None,
+        replace_body: str | None = None,
+        is_container: bool | None = None,
+        new_name: str | None = None,
     ) -> dict:
-        """Update an item: change its category and/or append a note to its body."""
+        """Update an item's metadata or body.
+
+        Change `category`, flip `is_container`, append a note (`append_body`) or
+        overwrite the prose (`replace_body`, mutually exclusive with append). Pass
+        `new_name` to rename the item: this also fixes its heading/filename and
+        re-points any items that listed it as their parent container.
+        """
         try:
-            item = vault.update_item(name, category=category, append_body=append_body)
-        except FileNotFoundError as e:
+            item = vault.update_item(
+                name,
+                category=category,
+                append_body=append_body,
+                replace_body=replace_body,
+                is_container=is_container,
+                new_name=new_name,
+            )
+        except (FileNotFoundError, FileExistsError, ValueError) as e:
             return {"error": str(e)}
         git = _maybe_commit(f"inventory: update {item.name}")
         return {**item.summary(), "git": git}
+
+    @mcp.tool()
+    def remove_item(name: str) -> dict:
+        """Delete an item's note from the inventory (e.g. you gave it away or tossed it).
+
+        This removes the note file. Containers that still have children are removed
+        too, leaving those children with a dangling `parent`; move them first if you
+        want to keep the containment tidy.
+        """
+        try:
+            item = vault.remove_item(name)
+        except FileNotFoundError as e:
+            return {"error": str(e)}
+        git = _maybe_commit(f"inventory: remove {item.name}")
+        return {"removed": item.name, "file": item.path.name, "git": git}
 
 
 mcp = _build_server()
