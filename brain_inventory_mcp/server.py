@@ -144,6 +144,17 @@ def _register_tools(mcp: "FastMCP") -> None:
         return {**item.summary(), "git": git}
 
     @mcp.tool()
+    def delete_item(name: str) -> dict:
+        """Delete an item's note (duplicates, mistakes, things that are gone). Refuses if
+        other items still live inside it. Returns any notes that still link to it."""
+        try:
+            deleted, linked = vault.delete_item(name)
+        except (FileNotFoundError, ValueError) as e:
+            return {"error": str(e)}
+        git = _maybe_commit(f"inventory: delete {deleted}")
+        return {"deleted": deleted, "still_linked_from": linked, "git": git}
+
+    @mcp.tool()
     def rename_item(name: str, new_name: str) -> dict:
         """Rename an item (note title and filename) and update every [[wikilink]] to it in the vault."""
         try:

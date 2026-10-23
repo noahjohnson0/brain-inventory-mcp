@@ -281,6 +281,29 @@ def rename_item(name: str, new_name: str) -> tuple[Item, list[str]]:
     return load_item(new_path), sorted(changed)
 
 
+def delete_item(name: str) -> tuple[str, list[str]]:
+    """Delete an item's note. Refuses if other items still live inside it.
+
+    Returns the deleted name and the vault files that still link to it. The vault is
+    git-versioned, so a deleted note can be restored from history.
+    """
+    item = find_item(name)
+    if not item:
+        raise FileNotFoundError(f"No inventory item named {name!r}")
+    children = [i.name for i in all_items() if (i.parent or "").lower() == item.path.stem.lower()]
+    if children:
+        raise ValueError(f"{item.name} still contains: {', '.join(children)}. Move those first.")
+    root = vault_root()
+    item.path.unlink()
+    link = re.compile(rf"\[\[{re.escape(item.path.stem)}(?=[\]|#])", re.IGNORECASE)
+    linked = sorted(
+        str(md.relative_to(root)) for md in root.rglob("*.md")
+        if not any(part.startswith(".") for part in md.relative_to(root).parts)
+        and link.search(md.read_text(encoding="utf-8"))
+    )
+    return item.name, linked
+
+
 def git_commit(message: str, paths: list[str] | None = None) -> str:
     """Stage inventory changes (or `paths`) and commit+push. Best-effort; returns status text."""
     root = vault_root()
