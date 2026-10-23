@@ -98,18 +98,20 @@ def _register_tools(mcp: "FastMCP") -> None:
         parent: str | None = None,
         body: str = "",
         is_container: bool = False,
+        glyph: str | None = None,
     ) -> dict:
         """Create a new inventory item.
 
         `name` is used verbatim as the note title/filename (Proper Case With Spaces;
         brand quirks like "iPhone 13 Pro" preserved). `parent` is the container it lives
         in (room/bag/drawer), with or without [[brackets]]. Set `is_container` true if
-        other items will live inside this one.
+        other items will live inside this one. `glyph` is a Lucide icon name
+        (https://lucide.dev/icons, e.g. "headphones", "lamp-desk") shown next to the item.
         """
         try:
             item = vault.create_item(
                 name=name, category=category, parent=parent,
-                body=body, is_container=is_container,
+                body=body, is_container=is_container, glyph=glyph,
             )
         except FileExistsError as e:
             return {"error": str(e)}
@@ -131,14 +133,28 @@ def _register_tools(mcp: "FastMCP") -> None:
         name: str,
         category: str | None = None,
         append_body: str | None = None,
+        glyph: str | None = None,
     ) -> dict:
-        """Update an item: change its category and/or append a note to its body."""
+        """Update an item: change its category or glyph (a Lucide icon name), and/or append a note to its body."""
         try:
-            item = vault.update_item(name, category=category, append_body=append_body)
+            item = vault.update_item(name, category=category, append_body=append_body, glyph=glyph)
         except FileNotFoundError as e:
             return {"error": str(e)}
         git = _maybe_commit(f"inventory: update {item.name}")
         return {**item.summary(), "git": git}
+
+    @mcp.tool()
+    def rename_item(name: str, new_name: str) -> dict:
+        """Rename an item (note title and filename) and update every [[wikilink]] to it in the vault."""
+        try:
+            item, changed = vault.rename_item(name, new_name)
+        except (FileNotFoundError, FileExistsError) as e:
+            return {"error": str(e)}
+        git = (
+            vault.git_commit(f"inventory: rename {name} to {item.name}", changed)
+            if _AUTOCOMMIT else "autocommit disabled"
+        )
+        return {**item.summary(), "links_updated": len(changed) - 2, "git": git}
 
 
 mcp = _build_server()
