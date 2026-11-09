@@ -134,11 +134,15 @@ def _register_tools(mcp: "FastMCP") -> None:
         category: str | None = None,
         append_body: str | None = None,
         glyph: str | None = None,
+        remove_embeds: list[str] | None = None,
     ) -> dict:
-        """Update an item: change its category or glyph (a Lucide icon name), and/or append a note to its body."""
+        """Update an item: change its category or glyph (a Lucide icon name), append a note to its body,
+        and/or remove embedded photos by file name (remove_embeds=["Camera tapo2 ... cutout.png"]),
+        e.g. to swap a bad photo for a better one."""
         try:
-            item = vault.update_item(name, category=category, append_body=append_body, glyph=glyph)
-        except FileNotFoundError as e:
+            item = vault.update_item(name, category=category, append_body=append_body, glyph=glyph,
+                                     remove_embeds=remove_embeds)
+        except (FileNotFoundError, ValueError) as e:
             return {"error": str(e)}
         git = _maybe_commit(f"inventory: update {item.name}")
         return {**item.summary(), "git": git}

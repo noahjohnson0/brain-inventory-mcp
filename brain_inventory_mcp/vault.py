@@ -232,11 +232,21 @@ def update_item(
     category: str | None = None,
     append_body: str | None = None,
     glyph: str | None = None,
+    remove_embeds: list[str] | None = None,
 ) -> Item:
     item = find_item(name)
     if not item:
         raise FileNotFoundError(f"No inventory item named {name!r}")
     text = item.path.read_text(encoding="utf-8")
+    for embed in remove_embeds or []:
+        # Drop ![[file]] (with any |size), and the line it sat on if nothing else is left there.
+        target = embed.strip().removeprefix("![[").removesuffix("]]").split("|")[0].strip()
+        pattern = re.compile(r"!\[\[" + re.escape(target) + r"(\|[^\]]*)?\]\]")
+        if not pattern.search(text):
+            raise ValueError(f"{item.name} doesn't embed {target!r}")
+        text = "\n".join(ln for ln in (pattern.sub("", l) if pattern.search(l) else l for l in text.split("\n"))
+                         if ln.strip() or not ln)
+        text = re.sub(r"\n{3,}", "\n\n", text)
     if category:
         text = _set_fm_field(text, "category", category)
     if glyph:
