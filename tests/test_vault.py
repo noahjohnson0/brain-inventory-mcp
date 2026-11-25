@@ -201,3 +201,38 @@ def test_custom_inventory_dir(tmp_path, monkeypatch):
     item = vault.create_item(name="Thing")
     assert item.path.parent.name == "stuff"
     assert vault.find_item("Thing") is not None
+
+
+def test_glyph_on_create_and_update(vault_dir):
+    vault.create_item(name="Lamp", category="Home", glyph="lamp-desk")
+    assert vault.find_item("Lamp").meta["glyph"] == "lamp-desk"
+    vault.update_item("Lamp", glyph="lamp")
+    assert vault.find_item("Lamp").meta["glyph"] == "lamp"
+
+
+def test_update_remove_embeds(vault_dir):
+    vault.create_item(name="Cable", category="A/V", body="![[shot 1.png|300]]\n\nUSB-C.")
+    vault.update_item("Cable", remove_embeds=["shot 1.png"])
+    assert "shot 1.png" not in vault.find_item("Cable").body
+    with pytest.raises(ValueError):
+        vault.update_item("Cable", remove_embeds=["missing.png"])
+
+
+def test_rename_item_rewrites_links(vault_dir):
+    vault.create_item(name="Old Box", category="Storage", is_container=True)
+    vault.create_item(name="Widget", category="Misc", parent="Old Box")
+    (vault_dir / "note.md").write_text("see [[Old Box|the box]]\n", encoding="utf-8")
+    item, changed = vault.rename_item("Old Box", "New Box")
+    assert item.path.name == "New Box.md"
+    assert vault.find_item("Widget").parent == "New Box"
+    assert "[[New Box|the box]]" in (vault_dir / "note.md").read_text(encoding="utf-8")
+    assert "note.md" in changed
+
+
+def test_delete_item_refuses_nonempty_container(vault_dir):
+    vault.create_item(name="Bin", category="Storage", is_container=True)
+    vault.create_item(name="Screw", category="Hardware", parent="Bin")
+    with pytest.raises(ValueError):
+        vault.delete_item("Bin")
+    vault.delete_item("Screw")
+    assert vault.delete_item("Bin")[0] == "Bin"

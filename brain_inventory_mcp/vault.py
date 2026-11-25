@@ -74,6 +74,7 @@ class Item:
             "category": self.category,
             "is_container": self.is_container,
             "parent": self.parent,
+            "glyph": self.meta.get("glyph"),
             "file": self.path.name,
         }
 
@@ -150,7 +151,9 @@ def find_item(name: str) -> Item | None:
     """Find by exact filename, then by case-insensitive name/stem match."""
     direct = path_for(name)
     if direct.is_file():
-        return load_item(direct)
+        # The filesystem may be case-insensitive; load the file under its real name.
+        real = next(p for p in direct.parent.iterdir() if p.name.lower() == direct.name.lower())
+        return load_item(real)
     target = name.strip().lower()
     for p in inventory_dir().glob("*.md"):
         item = load_item(p)
@@ -269,6 +272,7 @@ def create_item(
     parent: str | None = None,
     body: str = "",
     is_container: bool = False,
+    glyph: str | None = None,
 ) -> Item:
     path = path_for(name)
     if path.exists():
@@ -282,6 +286,8 @@ def create_item(
     ]
     if parent:
         lines.append(f"parent: {_wikilink(parent)}")
+    if glyph:
+        lines.append(f"glyph: {glyph}")
     lines += [
         f"created: {today}",
         f"updated: {today}",
@@ -345,6 +351,8 @@ def update_item(
     replace_body: str | None = None,
     is_container: bool | None = None,
     new_name: str | None = None,
+    glyph: str | None = None,
+    remove_embeds: list[str] | None = None,
 ) -> Item:
     """Update an item's metadata and/or body.
 
@@ -368,10 +376,21 @@ def update_item(
     display = new_name if new_name else item.name
 
     text = item.path.read_text(encoding="utf-8")
+    for embed in remove_embeds or []:
+        # Drop ![[file]] (with any |size), and the line it sat on if nothing else is left there.
+        target = embed.strip().removeprefix("![[").removesuffix("]]").split("|")[0].strip()
+        pattern = re.compile(r"!\[\[" + re.escape(target) + r"(\|[^\]]*)?\]\]")
+        if not pattern.search(text):
+            raise ValueError(f"{item.name} doesn't embed {target!r}")
+        text = "\n".join(ln for ln in (pattern.sub("", l) if pattern.search(l) else l for l in text.split("\n"))
+                         if ln.strip() or not ln)
+        text = re.sub(r"\n{3,}", "\n\n", text)
     if new_name:
         text = _set_fm_field(text, "name", _quote(new_name))
     if category:
         text = _set_fm_field(text, "category", _yaml_scalar(category))
+    if glyph:
+        text = _set_fm_field(text, "glyph", glyph)
     if is_container is not None:
         text = _set_fm_field(text, "is_container", "true" if is_container else "false")
 
@@ -397,6 +416,62 @@ def update_item(
     return load_item(item.path)
 
 
+def rename_item(name: str, new_name: str) -> tuple[Item, list[str]]:
+    """Rename an item's note and rewrite every [[wikilink]] to it across the vault.
+
+    Returns the renamed item and the vault-relative paths of every file changed.
+    """
+    item = find_item(name)
+    if not item:
+        raise FileNotFoundError(f"No inventory item named {name!r}")
+    new_path = path_for(new_name)
+    if new_path.exists() and str(new_path).lower() != str(item.path).lower():
+        raise FileExistsError(f"Item already exists: {new_path.name}")
+    root = vault_root()
+    old_stem = item.path.stem
+    text = item.path.read_text(encoding="utf-8")
+    text = _set_fm_field(text, "name", _quote(new_name))
+    text = _set_fm_field(text, "updated", _today())
+    text = re.sub(rf"^# {re.escape(item.name)}\s*$", f"# {new_name}", text, count=1, flags=re.MULTILINE)
+    item.path.unlink()
+    _atomic_write(new_path, text)
+    changed = {str(item.path.relative_to(root)), str(new_path.relative_to(root))}
+    # [[Old]], [[Old|alias]], [[Old#heading]]; the name in a link is case-insensitive in Obsidian.
+    link = re.compile(rf"\[\[{re.escape(old_stem)}(?=[\]|#])", re.IGNORECASE)
+    for md in root.rglob("*.md"):
+        if any(part.startswith(".") for part in md.relative_to(root).parts):
+            continue
+        body = md.read_text(encoding="utf-8")
+        updated = link.sub(f"[[{new_path.stem}", body)
+        if updated != body:
+            _atomic_write(md, updated)
+            changed.add(str(md.relative_to(root)))
+    return load_item(new_path), sorted(changed)
+
+
+def delete_item(name: str) -> tuple[str, list[str]]:
+    """Delete an item's note. Refuses if other items still live inside it.
+
+    Returns the deleted name and the vault files that still link to it. The vault is
+    git-versioned, so a deleted note can be restored from history.
+    """
+    item = find_item(name)
+    if not item:
+        raise FileNotFoundError(f"No inventory item named {name!r}")
+    children = [i.name for i in all_items() if (i.parent or "").lower() == item.path.stem.lower()]
+    if children:
+        raise ValueError(f"{item.name} still contains: {', '.join(children)}. Move those first.")
+    root = vault_root()
+    item.path.unlink()
+    link = re.compile(rf"\[\[{re.escape(item.path.stem)}(?=[\]|#])", re.IGNORECASE)
+    linked = sorted(
+        str(md.relative_to(root)) for md in root.rglob("*.md")
+        if not any(part.startswith(".") for part in md.relative_to(root).parts)
+        and link.search(md.read_text(encoding="utf-8"))
+    )
+    return item.name, linked
+
+
 def remove_item(name: str) -> Item:
     """Delete an item's note from the vault. Returns the removed item."""
     item = find_item(name)
@@ -406,17 +481,17 @@ def remove_item(name: str) -> Item:
     return item
 
 
-def git_commit(message: str) -> str:
-    """Stage inventory changes and commit+push. Best-effort; returns status text."""
+def git_commit(message: str, paths: list[str] | None = None) -> str:
+    """Stage inventory changes (or `paths`) and commit+push. Best-effort; returns status text."""
     root = vault_root()
-    sub = inventory_subdir()
+    paths = paths or [inventory_subdir()]
     try:
         subprocess.run(
-            ["git", "add", sub], cwd=root, check=True,
+            ["git", "add", "-A", "--", *paths], cwd=root, check=True,
             capture_output=True, text=True,
         )
         status = subprocess.run(
-            ["git", "status", "--porcelain", sub], cwd=root,
+            ["git", "status", "--porcelain", "--", *paths], cwd=root,
             capture_output=True, text=True,
         )
         if not status.stdout.strip():
