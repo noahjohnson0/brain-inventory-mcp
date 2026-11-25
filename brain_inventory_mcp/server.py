@@ -66,13 +66,15 @@ def _build_server() -> "FastMCP":
 
 def _register_tools(mcp: "FastMCP") -> None:
     @mcp.tool()
-    def search_inventory(query: str) -> list[dict]:
+    def search_inventory(query: str, limit: int = vault.DEFAULT_SEARCH_LIMIT) -> list[dict]:
         """Search inventory items by name, category, parent, or body text.
 
-        Returns a list of item summaries (name, category, is_container, parent, file).
-        Use this first when the user describes an item loosely ("my charger").
+        Ranked, multi-word search: every word in the query must match somewhere,
+        and hits in the name rank above hits in the body. Returns up to `limit`
+        item summaries (name, category, is_container, parent, file). Use this
+        first when the user describes an item loosely ("my usb charger").
         """
-        return [i.summary() for i in vault.search_items(query)]
+        return [i.summary() for i in vault.search_items(query, limit=limit)]
 
     @mcp.tool()
     def list_inventory(category: str | None = None, parent: str | None = None) -> list[dict]:
@@ -133,15 +135,29 @@ def _register_tools(mcp: "FastMCP") -> None:
         name: str,
         category: str | None = None,
         append_body: str | None = None,
+        replace_body: str | None = None,
+        is_container: bool | None = None,
         glyph: str | None = None,
         remove_embeds: list[str] | None = None,
     ) -> dict:
-        """Update an item: change its category or glyph (a Lucide icon name), append a note to its body,
-        and/or remove embedded photos by file name (remove_embeds=["Camera tapo2 ... cutout.png"]),
-        e.g. to swap a bad photo for a better one."""
+        """Update an item's metadata or body.
+
+        Change `category`, `glyph` (a Lucide icon name) or `is_container`, append a note
+        (`append_body`) or overwrite the prose (`replace_body`, mutually exclusive with
+        append), and/or remove embedded photos by file name
+        (remove_embeds=["Camera tapo2 ... cutout.png"]), e.g. to swap a bad photo for a
+        better one. To rename, use rename_item (it also fixes links).
+        """
         try:
-            item = vault.update_item(name, category=category, append_body=append_body, glyph=glyph,
-                                     remove_embeds=remove_embeds)
+            item = vault.update_item(
+                name,
+                category=category,
+                append_body=append_body,
+                replace_body=replace_body,
+                is_container=is_container,
+                glyph=glyph,
+                remove_embeds=remove_embeds,
+            )
         except (FileNotFoundError, ValueError) as e:
             return {"error": str(e)}
         git = _maybe_commit(f"inventory: update {item.name}")
